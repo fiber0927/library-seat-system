@@ -1,0 +1,9 @@
+# 前端忽略
+node_modules/
+dist/
+*.local
+.env
+# 后端忽略
+library-backend/target/
+library-backend/*.iml
+library-backend/*.log
