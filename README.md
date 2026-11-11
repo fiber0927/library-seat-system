@@ -1,435 +1,261 @@
-# 图书馆座位管理系统
+# 图书馆座位预约系统 Library Seat Reservation System
 
-## 项目概述
+> 前后端分离的图书馆座位在线预约平台，解决座位资源分配不均与抢座冲突问题。
+> 后端提供完整的预约业务与鉴权能力，前端实现了座位可视化选座与移动端适配的交互原型。
+>
+> Spring Boot 3 + MyBatis-Plus + MySQL + JWT ｜ Vue 3 + Pinia + Element Plus
 
-这是一个功能完整的**图书馆座位预约管理系统**，采用前后端分离架构，支持电脑端和手机端访问。系统提供直观的可视化座位地图、灵活的预约管理、签到签退等功能。
+## 技术栈
 
-### 技术栈
+| 层级 | 技术 |
+|---|---|
+| 后端 | JDK 17 · Spring Boot 3.2.2 · **MyBatis-Plus 3.5.5**（条件构造器 + 全局逻辑删除）· Lombok |
+| 鉴权 | **JWT**（jjwt 0.12.3，HS256）+ Spring MVC `HandlerInterceptor` · **BCrypt** 密码哈希 |
+| 定时任务 | Spring Scheduling（`@Scheduled`）· MySQL 存储过程 + EVENT 定时事件 |
+| 数据库 | MySQL 8（InnoDB / utf8mb4）· HikariCP 连接池 |
+| 前端 | Vue 3（Composition API）· Vue Router 4 · Pinia · Element Plus · Vite 5 |
 
-#### 前端技术栈
-- **Vue 3** + Composition API（setup语法糖）
-- **Element Plus** UI组件库
-- **Vite 5** 构建工具（开发服务器端口：5174）
-- **Vue Router 4** 页面路由
-- **Pinia** 状态管理
-- **axios** HTTP客户端
-- 响应式设计，完美适配手机端
+规模：后端 23 个 Java 文件 / 1617 行，前端 17 个文件 / 5093 行，34 个 REST 接口，4 张表。
 
-#### 后端技术栈
-- **Spring Boot 3.2.2** 核心框架
-- **MyBatis-Plus 3.5.5** ORM框架
-- **MySQL 8** 数据库
-- **JWT** Token认证
-- **BCrypt** 密码加密
-- **Spring Security** 安全框架
+## 功能模块
+
+### 用户端
+
+| 模块 | 说明 |
+|---|---|
+| 注册 / 登录 | 用户名 + 密码 + 邮箱注册，登录签发 JWT |
+| 可视化座位地图 | CSS Grid 布局的座位图，楼层 / 区域 / 状态三维筛选，按楼层统计 |
+| 座位预约 | 选择楼层 + 区域 + 时段，**一人一座限制** + **时段重叠检测** |
+| 签到 / 暂离 / 签退 | 30 分钟签到宽限期；暂离与返回；结束使用 |
+| 个人中心 | 预约记录、违约记录查询 |
+
+### 管理员端
+
+| 模块 | 说明 |
+|---|---|
+| 数据仪表盘 | 座位状态统计、违约统计 |
+| 座位管理 | 座位增删改查、状态维护、设施（电源 / 靠窗）设置 |
+| 用户管理 | 用户列表、账号启用 / 禁用 |
+| 预约管理 | 全部预约记录查询、按状态筛选 |
+| 违约管理 | 违约记录处理、违约原因统计 |
+
+## 核心业务设计
+
+### 1. 两套状态机
+
+座位和预约是**两个不同维度**，所以各有一套状态：
+
+| `seat.status` | 含义 | | `reservation.status` | 含义 |
+|---|---|---|---|---|
+| `available` | 空闲，可预约 | | `pending` | 待签到 |
+| `reserved` | 已被预约 | | `active` | 使用中 |
+| `in_use` | 使用中 | | `away` | 暂离 |
+| `away` | 暂离 | | `violated` | 已违约（超时未签到） |
+| `disabled` | 不可用（设备故障） | | | |
+
+两套状态不是一一对应的：**超时违约**这条路径上，预约变成 `violated`，而座位直接回到 `available`。
+
+### 2. 30 分钟签到宽限期
+
+宽限期从**预约开始时间**起算（不是从下单时间起算），时长可配置：
+
+```yaml
+system:
+  check-in-grace-period: 30   # 签到宽限期（分钟）
+```
+
+- 宽限期内签到 → 预约 `active`、座位 `in_use`
+- 超过宽限期签到 → 预约 `violated`、释放座位、生成违约记录、违约次数 +1
+- 定时任务也会对超时的 `pending` 预约做同样的处理
+
+### 3. 超时清理：应用层 + 数据库层双保险
+
+**应用层**（`ReservationCleanupTask`，`@Scheduled(fixedRate = 60000)`）：
+每 60 秒扫一次超时的 `pending` 预约，改 `violated`、释放座位、写违约记录、违约次数 +1。
+
+**数据库层**（`sql/init.sql`）：
+另写了一个存储过程 + MySQL EVENT 事件，即使应用进程挂掉，数据库也会把超时预约清掉：
+
+```sql
+CREATE PROCEDURE cleanup_expired_reservations()
+    UPDATE reservation r INNER JOIN seat s ON r.seat_id = s.id
+    SET r.status='violated', s.status='available', s.user_id=NULL
+    WHERE r.status='pending' AND r.date=CURDATE()
+      AND ADDTIME(r.date, r.start_time) < DATE_SUB(NOW(), INTERVAL GRACE_PERIOD MINUTE);
+```
+
+还建了两个统计视图：`v_seat_statistics`（楼层维度座位使用率）、`v_user_reservation_stats`（用户预约统计）。
+
+### 4. 鉴权与权限
+
+- **JWT 无状态认证**：`JwtUtils` 签发（HS256，有效期 24 小时），`JwtInterceptor` 校验，
+  把 `userId` / `username` / `role` 放进请求上下文（`HttpServletRequest.setAttribute`）
+- **接口级权限**：管理员接口校验 `role`，普通用户只能访问自己的数据，越权返回 403
+- **密码**：BCrypt 加盐哈希（`BCryptPasswordEncoder`），数据库里不存明文
+- **逻辑删除**：MyBatis-Plus 全局配置，删除即 `deleted = 1`
+
+### 5. 开发过程中修掉的真实 Bug
+
+`开发过程.md文件/` 里记录了带**前后代码对比**的 5 个问题，其中两个值得一看：
+
+**① 座位显示空闲，但后端说已被预约**
+取消预约时原本只把预约状态改成 `cancelled`、座位改成 `available`，
+但**预约记录还在**，而时段冲突检测查的就是预约表 —— 于是座位"看着能约，其实约不上"。
+修法是改成**物理删除**预约记录，并且固定"先释放座位、再删记录"的顺序。
+
+**② 暂离状态下无法取消，座位永久卡死**
+原代码禁止在 `active` / `away` 状态取消预约，用户在暂离时点取消被拒，
+座位就永远停在"已预约"。改成**任何状态都能取消且都释放座位**，并按原状态返回不同的提示文案。
+
+## 数据库设计
+
+4 张表，`utf8mb4` + InnoDB，索引齐备：
+
+| 表 | 说明 | 关键索引 |
+|---|---|---|
+| `sys_user` | 用户 | `username` UNIQUE、`email` UNIQUE、`role`、`deleted` |
+| `seat` | 座位（主键就是座位号，如 `A101`） | `floor`、`area`、`status`、`user_id`、`deleted` |
+| `reservation` | 预约 | `seat_id`、`user_id`、`date`、`status`、**(seat_id, date, status)** |
+| `violation` | 违约记录 | `user_id`、`seat_id`、`status`、`date` |
+
+座位按 **3 层 × 4 区域（A/B/C/D）** 布局：每层 28 个（A / B / C 区各 8 个 + D 区 4 个），共 **84 个**。
+区域对应不同设施：A 区电源插座 + 靠窗、B 区空调、C 区安静区、D 区讨论区，3 楼在 1 楼设施基础上追加"安静区"。
+
+初始化脚本：`library-seat-system/library-backend/sql/init.sql`（含建表、种子数据、存储过程、事件、视图）。
+
+### 演示账号
+
+| 角色 | 用户名 | 密码 |
+|---|---|---|
+| 管理员 | `admin` | `123456` |
+| 普通用户 | `student001` / `student002` / `student003` | `123456` |
 
 ## 项目结构
 
 ```
 library-seat-system/
-├── library-seat-system/              # 前端项目（Vue3）
+├── library-seat-system/                 # 前端 Vue 3
 │   ├── src/
-│   │   ├── views/                  # 页面组件
-│   │   │   ├── user/              # 用户端页面
-│   │   │   │   ├── Home.vue        # 首页
-│   │   │   │   ├── Login.vue      # 登录页
-│   │   │   │   ├── Register.vue   # 注册页
-│   │   │   │   ├── SeatMap.vue    # 座位地图（核心）
-│   │   │   └── PersonalCenter.vue # 个人中心
-│   │   │   └── admin/             # 管理员页面
-│   │   │       ├── Dashboard.vue         # 管理仪表盘
-│   │   │       ├── SeatManagement.vue    # 座位管理
-│   │   │       ├── UserManagement.vue    # 用户管理
-│   │   │       ├── ReservationManagement.vue  # 预约管理
-│   │   │       └── ViolationManagement.vue   # 违规管理
-│   │   ├── stores/                 # Pinia状态管理
-│   │   │   ├── user.js           # 用户状态
-│   │   │   ├── seats.js          # 座位状态
-│   │   │   └── admin.js          # 管理员状态
-│   │   ├── router/               # 路由配置
-│   │   └── styles/               # 全局样式
-│   ├── index.html
-│   ├── vite.config.js            # Vite配置
+│   │   ├── views/
+│   │   │   ├── user/                   # 用户端：Home / Login / Register / SeatMap / PersonalCenter
+│   │   │   └── admin/                  # 管理端：Dashboard / Seat / User / Reservation / Violation
+│   │   ├── stores/                     # Pinia：user / seats / admin
+│   │   ├── router/index.js             # 路由 + 登录守卫
+│   │   └── styles/global.css
+│   ├── vite.config.js                  # 端口 5174
 │   └── package.json
 │
-├── library-backend/               # 后端项目（SpringBoot）
+├── library-seat-system/library-backend/ # 后端 Spring Boot
 │   ├── src/main/java/com/library/
-│   │   ├── controller/            # REST API控制器
-│   │   │   ├── UserController.java
-│   │   │   ├── SeatController.java
-│   │   │   ├── ReservationController.java
-│   │   │   └── ViolationController.java
-│   │   ├── service/              # 业务逻辑层
-│   │   │   ├── UserService.java
-│   │   │   ├── SeatService.java
-│   │   │   ├── ReservationService.java
-│   │   │   └── ViolationService.java
-│   │   ├── mapper/               # MyBatis数据访问层
-│   │   ├── entity/               # 实体类
-│   │   ├── config/               # 配置类（CORS、JWT等）
-│   │   ├── interceptor/           # 拦截器
-│   │   ├── scheduler/             # 定时任务
-│   │   └── utils/                # 工具类
-│   ├── src/main/resources/
-│   │   └── application.yml       # 应用配置
-│   ├── sql/
-│   │   └── init.sql             # 数据库初始化脚本
-│   └── pom.xml
+│   │   ├── common/Result.java          # 统一响应体
+│   │   ├── config/                     # WebMvcConfig（注册拦截器）、CorsConfig
+│   │   ├── controller/                 # User / Seat / Reservation / Violation
+│   │   ├── entity/                     # 4 个实体
+│   │   ├── interceptor/JwtInterceptor  # JWT 校验
+│   │   ├── mapper/                     # 4 个 BaseMapper（无 XML）
+│   │   ├── scheduler/                  # ReservationCleanupTask
+│   │   ├── service/                    # 业务逻辑
+│   │   └── utils/JwtUtils
+│   ├── src/main/resources/application.yml
+│   └── sql/init.sql
 │
-└── README.md                    # 项目说明文档
+└── 开发过程.md文件/                     # 13 份开发过程记录（含前后代码对比的踩坑复盘）
 ```
 
-## 功能特性
+## 快速启动
 
-### 🎯 用户端功能
+### 环境要求
 
-✅ **用户认证**
-- 用户注册（用户名、密码、邮箱）
-- 用户登录（JWT Token认证）
-- 会话管理（自动登录状态保持）
+JDK 17+ · Maven 3.9+ · MySQL 8.0+ · Node.js 18+
 
-✅ **可视化座位地图**
-- **简约一体式座椅图标**设计（带靠背+两侧扶手）
-- 楼层切换（1楼/2楼/3楼）
-- 区域筛选（A/B/C/D四个区域）
-- 状态筛选（空闲/已预约/使用中/暂离/不可用）
-- 座位号搜索功能
-- **按楼层独立统计**（实时显示各楼层座位状态）
-
-✅ **座位预约**
-- 楼层+区域+时段选择
-- **一人一座限制**（同一用户只能预约一个座位）
-- **30分钟签到宽限期**（超时自动取消预约）
-- 实时预约状态更新
-
-✅ **签到签退管理**
-- 预约签到（支持宽限期提示）
-- 暂离功能（离开座位时使用）
-- 取消暂离（返回座位）
-- 结束使用（签退）
-- **任何状态下都可取消预约**（座位立即释放）
-
-✅ **个人中心**
-- 个人信息查看
-- 预约记录管理
-- 违约记录查询
-
-### 🔧 管理员端功能
-
-✅ **管理仪表盘**
-- 实时座位状态统计
-- 各楼层座位统计
-- 违规记录统计
-- **手动清零功能**（适合演示使用）
-
-✅ **座位管理**
-- 座位增删改查
-- 座位状态管理
-- 座位设施设置（电源插座、靠窗）
-
-✅ **用户管理**
-- 用户列表查看
-- 用户状态管理
-
-✅ **违规管理**
-- 违规记录处理
-- 违规原因统计
-
-✅ **预约管理**
-- 所有预约记录查看
-- 预约状态管理
-
-## 座位图标设计
-
-### 简约一体式座椅
-
-采用现代简约设计理念，每个座位由三部分组成：
-
-```
-    ┌─────────┐        ← 圆润靠背（顶部圆角15px）
-    │         │
-    │  A101  │        ← 座位号（白色字体）
-    │ ⚡    🪟│        ← 功能图标（电源/靠窗）
-────┤         ├────  ← 左右扶手（圆润设计）
-    │         │
-    └─────────┘        ← 座椅主体（底部圆角）
-```
-
-### 座位尺寸规格
-- **靠背**：60px × 25px（15px顶部圆角）
-- **座椅主体**：75px × 55px（8px圆角）
-- **扶手**：8px × 40px（左右各一个）
-- **整体**：80px × 85px（统一规格）
-
-### 五种状态颜色
-
-| 状态 | 颜色 | 说明 |
-|------|------|------|
-| 🟢 空闲 | 绿色渐变 (#81C784 → #66BB6A) | 可预约 |
-| 🔵 已预约 | 蓝色渐变 (#64B5F6 → #42A5F5) | 已被预约 |
-| 🟠 使用中 | 橙色渐变 (#FFB74D → #FFA726) | 正在使用 |
-| ⚪ 暂离 | 灰色渐变 (#B0BEC5 → #90A4AE) | 暂时离开 |
-| ⬜ 不可用 | 浅灰渐变 (#E0E0E0 → #BDBDBD) | 不可预约 |
-
-### 交互效果
-
-- **鼠标悬停**：整体上浮2px + 阴影加深
-- **选中状态**：蓝色边框高亮 + 发光阴影
-- **触摸交互**：流畅的触摸反馈
-
-## 快速开始
-
-### 前端启动（推荐）
+### 1. 建库
 
 ```bash
-# 进入前端目录
-cd library-seat-system
-
-# 安装依赖
-npm install
-
-# 启动开发服务器
-npm run dev
+mysql -u root -p < library-seat-system/library-backend/sql/init.sql
 ```
 
-**访问地址**：
-- 电脑端：http://localhost:5174/
-- 手机端：http://192.168.190.1:5174/（需同一WiFi网络）
+脚本会创建 `library_seat_system` 库、4 张表、84 个座位、4 个演示账号，
+以及存储过程 / EVENT 事件 / 2 个统计视图。
+脚本开头已写 `SET NAMES utf8mb4;`——因为脚本本身是 UTF-8，而 MySQL 客户端默认字符集可能是 gbk，
+不显式指定会导致中文数据（座位特征、违约原因）乱码甚至导入失败。
+**EVENT 事件需要 `event_scheduler` 开启**（脚本里已执行 `SET GLOBAL event_scheduler = ON`，
+若你的 MySQL 启动时未开启，可以手动执行一次）。
 
-### 后端启动
+### 2. 改数据库连接
 
-#### 1. 数据库配置
-
-```bash
-# 登录MySQL
-mysql -u root -p
-
-# 创建数据库
-CREATE DATABASE library_seat_system CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-
-# 退出MySQL
-EXIT;
-
-# 导入数据
-mysql -u root -p library_seat_system < library-backend/sql/init.sql
-```
-
-#### 2. 修改数据库配置
-
-编辑 `library-backend/src/main/resources/application.yml`：
+编辑 `library-seat-system/library-backend/src/main/resources/application.yml`：
 
 ```yaml
 spring:
   datasource:
-    url: jdbc:mysql://localhost:3306/library_seat_system?useUnicode=true&characterEncoding=utf8
+    url: jdbc:mysql://localhost:3306/library_seat_system?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai
     username: root
-    password: your_password
+    password: 你的密码
 ```
 
-#### 3. 编译运行
+### 3. 启动后端
 
 ```bash
-# 进入后端目录
-cd library-backend
-
-# Maven编译打包
-mvn clean package -DskipTests
-
-# 运行JAR包
-java -jar target/library-seat-system-1.0.0.jar
+cd library-seat-system/library-backend
+mvn spring-boot:run
 ```
 
-服务运行在：http://localhost:8080
+服务地址 `http://localhost:8080`，接口前缀 `/api`（`server.servlet.context-path: /api`）。
 
-## 测试账号
-
-| 角色 | 用户名 | 密码 | 说明 |
-|------|--------|------|------|
-| 管理员 | admin | admin123 | 管理员权限，可访问管理后台 |
-| 普通用户 | student001 | 123456 | 用户权限，基础功能 |
-| 普通用户 | student002 | 123456 | 用户权限，基础功能 |
-| 普通用户 | test | 123456 | 测试用户 |
-
-## 核心业务流程
-
-### 预约流程
-
-```
-用户登录 → 选择楼层/区域 → 选择座位 → 填写预约信息 → 预约成功
-                                    ↓
-                              等待签到（30分钟内）
-                                    ↓
-                    ┌───────────┴───────────┐
-                    ↓                       ↓
-                  签到成功              超时取消
-                    ↓                       ↓
-              座位状态：使用中        座位状态：空闲
-                    ↓                 违约记录+1
-              ┌───┴───┐
-              ↓       ↓
-           暂离     结束使用
-              ↓       ↓
-          座位状态：暂离    座位状态：空闲
-              ↓
-          返回使用
-              ↓
-          座位状态：使用中
-```
-
-### 座位状态流转
-
-```
-空闲 ←→ 已预约 → 使用中 ↔ 暂离
-  ↑       ↓         ↓
-  └───────┴─────────┘
-           ↓
-        已取消/已违约
-```
-
-## API 接口
-
-### 用户接口
-
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `/api/users/login` | POST | 用户登录 |
-| `/api/users/register` | POST | 用户注册 |
-| `/api/users/{id}` | GET | 获取用户信息 |
-
-### 座位接口
-
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `/api/seats` | GET | 获取所有座位 |
-| `/api/seats/floor/{floor}` | GET | 按楼层获取座位 |
-| `/api/seats/statistics` | GET | 获取统计信息 |
-| `/api/seats/{id}` | POST | 添加座位 |
-| `/api/seats/{id}/status` | PUT | 更新座位状态 |
-
-### 预约接口
-
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `/api/reservations` | POST | 创建预约 |
-| `/api/reservations/{id}/check-in` | POST | 签到（含30分钟宽限期） |
-| `/api/reservations/{id}/away` | POST | 暂离 |
-| `/api/reservations/{id}/return` | POST | 取消暂离 |
-| `/api/reservations/{id}/cancel` | POST | 取消预约（任何状态） |
-| `/api/reservations/{id}/checkout` | POST | 结束使用 |
-| `/api/reservations/reset` | POST | 管理员清零（演示用） |
-
-## 数据库表结构
-
-### sys_user（用户表）
-- id, username, password, email, role, status, violations_count, create_time
-
-### seat（座位表）
-- id, seat_number, floor, area, status, has_power, is_window, create_time
-
-### reservation（预约表）
-- id, user_id, seat_id, date, start_time, end_time, status, check_in_time, cancel_time, create_time
-
-### violation（违规表）
-- id, user_id, seat_id, reservation_id, reason, status, handle_time, create_time
-
-## 手机端适配
-
-### 响应式设计
-
-✅ **全局适配**
-- Viewport配置优化
-- 字体大小自适应（14px/13px）
-- 输入框防缩放（16px字体）
-
-✅ **座位地图适配**
-- 楼层切换标签栏优化
-- 座位网格自适应列数
-- 触摸友好的点击区域（≥44px）
-
-✅ **布局适配**
-- 侧边栏变为顶部抽屉
-- 卡片布局响应式
-- 按钮尺寸适合触摸
-
-### 手机端访问
-
-确保手机和电脑连接同一WiFi，然后访问：
-
-- 图书馆系统：http://192.168.190.1:5174/
-
-
-## 项目亮点
-
-### 1. 现代化UI设计
-- 简约一体式座椅图标
-- Element Plus组件库
-- 流畅的动画效果
-- 响应式布局
-
-### 2. 业务逻辑完善
-- 一人一座限制
-- 30分钟签到宽限期
-- 任何状态下可取消预约
-- 违约记录管理
-
-### 3. 演示友好
-- 手动清零功能（一键恢复初始状态）
-- 实时状态统计
-- 清晰的操作反馈
-
-### 4. 性能优化
-- Vite快速热更新
-- Pinia状态管理
-- 响应式计算属性
-- CSS硬件加速
-
-## 开发说明
-
-### 前端开发
+### 4. 启动前端
 
 ```bash
-# 代码规范检查
-npm run lint
-
-# 构建生产版本
-npm run build
+cd library-seat-system
+npm install
+npm run dev
 ```
 
-### 后端开发
+访问 `http://localhost:5174`；手机同 WiFi 下用 `http://<本机IP>:5174` 访问。
 
-```bash
-# 运行测试
-mvn test
+## API 一览
 
-# 只编译
-mvn compile
+共 34 个接口，前缀 `/api`。除登录注册外均需携带 `Authorization: Bearer <token>`。
 
-# 跳过测试打包
-mvn package -DskipTests
-```
+| 模块 | 方法与路径 | 说明 |
+|---|---|---|
+| 用户 | `POST /users/login`、`POST /users/register` | 登录 / 注册（免鉴权） |
+| | `GET /users/current` | 当前登录用户 |
+| | `GET /users/{id}`、`PUT /users/{id}` | 用户信息查询 / 修改 |
+| | `GET /users` | 用户列表（管理员） |
+| | `PUT /users/{id}/toggle-enabled` | 启用 / 禁用账号（管理员） |
+| 座位 | `GET /seats`、`GET /seats/{id}` | 座位列表 / 详情 |
+| | `GET /seats/floor/{floor}`、`/seats/floor/{floor}/area/{area}`、`/seats/available` | 按楼层 / 区域 / 空闲筛选 |
+| | `GET /seats/statistics`、`/seats/statistics/floor/{floor}` | 座位统计 |
+| | `POST /seats`、`PUT /seats/{id}/status`、`DELETE /seats/{id}` | 座位增删改（管理员） |
+| 预约 | `POST /reservations` | 创建预约（含一人一座 + 时段冲突校验） |
+| | `POST /reservations/{id}/check-in`、`/away`、`/return`、`/cancel`、`/checkout` | 签到 / 暂离 / 返回 / 取消 / 签退 |
+| | `GET /reservations/user/{userId}`、`/reservations/user/{userId}/active` | 我的预约 / 当前预约 |
+| | `GET /reservations`、`/reservations/status/{status}`、`/reservations/date/{date}` | 全部预约查询（管理员） |
+| 违约 | `GET /violations`、`/violations/pending`、`/violations/statistics` | 违约查询与统计（管理员） |
+| | `GET /violations/user/{userId}` | 我的违约记录 |
+| | `POST /violations/{id}/handle`、`DELETE /violations/{id}` | 处理 / 删除违约（管理员） |
 
-## 注意事项
+## 已知限制
 
-1. **后端未编译**：由于Maven仓库连接超时，后端项目需要手动编译
-2. **前端独立运行**：前端项目可以独立运行，使用本地模拟数据
-3. **数据库依赖**：完整功能需要MySQL数据库支持
-4. **端口占用**：确保5174端口未被占用
+写在这里是为了避免误解，也方便后续补齐：
+
+- **前端目前是交互原型，尚未联调后端**。`src/stores/seats.js` 用 `generateMockSeats()`
+  在浏览器里生成座位、状态随机分配，预约记录存在 localStorage；
+  后端 34 个接口已经写完但前端一次都没调用过。
+  前端的"一键清零"也只是清本地 mock 数据，并没有调用后端。
+- **没有并发控制**。预约链路是"先查后写"（查座位状态 → 查一人一座 → 查时段冲突 → 写入），
+  没有分布式锁、没有唯一索引、没有乐观锁，两个并发请求可能同时通过校验造成重复预约。
+  正确做法是**条件更新**（`UPDATE seat SET status=? WHERE id=? AND status='available'`）
+  加**唯一索引**兜底，而不是引入 Redis 分布式锁。
+- **座位状态不分日期**。`seat.status` 是座位级的全局状态，所以今天约了 A101，
+  明天其他人也约不了它。正确做法是把"座位瞬时状态"和"时段占用"拆成两张表。
+- **时段重叠判定用的是闭区间**（`start_time <= end AND end_time >= start`），
+  首尾相接的两个时段会被误判为冲突，应改成半开区间。
+- **没有全局异常处理**，也没有 `@Valid` 参数校验（依赖引了但没用），参数格式错误会直接 500。
+- **没有单元测试**，也没有接口文档。
+- **JWT 密钥硬编码在 `application.yml`**，且没有黑名单 / 刷新机制，
+  账号被禁用后旧 token 在有效期内仍然可用。
 
 ## License
 
-MIT License
-
-## 作者
-
-基于 Vue 3 + Spring Boot 的现代化图书馆座位管理系统
-
-## 更新日志
-
-### v1.0.0 (2026-04)
-- ✅ 完成前后端基础功能
-- ✅ 实现座位预约核心逻辑
-- ✅ 优化座位图标设计（简约一体式座椅）
-- ✅ 添加手机端适配
-- ✅ 实现楼层切换和按楼层统计
-- ✅ 添加手动清零功能（演示用）
-- ✅ 完善签到签退流程
+MIT

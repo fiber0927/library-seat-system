@@ -3,11 +3,17 @@
 -- 创建时间: 2026-04-07
 
 -- 创建数据库
-CREATE DATABASE IF NOT EXISTS library_seat_system 
-CHARACTER SET utf8mb4 
+CREATE DATABASE IF NOT EXISTS library_seat_system
+CHARACTER SET utf8mb4
 COLLATE utf8mb4_unicode_ci;
 
 USE library_seat_system;
+
+-- 明确指定连接字符集为 utf8mb4。
+-- 本文件是 UTF-8 编码，而 MySQL 客户端默认可能是 gbk / latin1；
+-- 不显式指定的话，中文数据（座位特征、违约原因等）会被按错误字符集解读，
+-- 轻则乱码，重则报 "Data too long" 直接导入失败。
+SET NAMES utf8mb4;
 
 -- =====================================================
 -- 表1: 用户表 (sys_user)
@@ -111,7 +117,7 @@ CREATE TABLE `violation` (
 -- 插入测试数据
 -- =====================================================
 
--- 插入管理员账号 (密码: admin123, BCrypt加密)
+-- 插入初始账号：密码统一为 123456（BCrypt 加密存储，4 个账号用的是同一个哈希）
 INSERT INTO `sys_user` (`username`, `password`, `email`, `phone`, `role`, `violations`) VALUES
 ('admin', '$2a$10$N.zmdr9k7uOCQb376NoUnuTJ8iAt6Z5EHsM8lE9lBOsl7iKTVKIUi', 'admin@library.com', '13800138000', 'admin', 0),
 ('student001', '$2a$10$N.zmdr9k7uOCQb376NoUnuTJ8iAt6Z5EHsM8lE9lBOsl7iKTVKIUi', 'student001@example.com', '13900139000', 'user', 1),
@@ -187,26 +193,26 @@ DELIMITER //
 CREATE PROCEDURE IF NOT EXISTS `cleanup_expired_reservations`()
 BEGIN
     DECLARE GRACE_PERIOD INT DEFAULT 30; -- 宽限期30分钟
-    
+
     -- 更新超时预约为违规状态
     UPDATE reservation r
     INNER JOIN seat s ON r.seat_id = s.id
-    SET 
+    SET
         r.status = 'violated',
         s.status = 'available',
         s.user_id = NULL,
         r.update_time = NOW()
-    WHERE 
+    WHERE
         r.status = 'pending'
         AND r.date = CURDATE()
         AND ADDTIME(r.date, r.start_time) < DATE_SUB(NOW(), INTERVAL GRACE_PERIOD MINUTE);
-        
+
 END //
 
 DELIMITER ;
 
 -- =====================================================
--- 创建事件: 每天凌晨2点执行清理任务
+-- 创建事件: 每小时执行一次超时预约清理
 -- =====================================================
 SET GLOBAL event_scheduler = ON;
 
@@ -221,7 +227,7 @@ DO CALL cleanup_expired_reservations();
 -- 视图: 座位使用统计
 -- =====================================================
 CREATE OR REPLACE VIEW `v_seat_statistics` AS
-SELECT 
+SELECT
     floor,
     COUNT(*) as total_seats,
     SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) as available_seats,
@@ -238,7 +244,7 @@ GROUP BY floor;
 -- 视图: 用户预约统计
 -- =====================================================
 CREATE OR REPLACE VIEW `v_user_reservation_stats` AS
-SELECT 
+SELECT
     u.id as user_id,
     u.username,
     COUNT(r.id) as total_reservations,
