@@ -22,6 +22,7 @@ logs/
 .env
 .env.local
 *.local
+application-local.yml
 
 # 系统
 .DS_Store

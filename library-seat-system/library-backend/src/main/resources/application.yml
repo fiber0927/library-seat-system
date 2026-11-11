@@ -4,13 +4,15 @@ server:
     context-path: /api
 
 spring:
+  profiles:
+    active: local
   application:
     name: library-seat-system
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/library_seat_system?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
-    password: root
+    password: ${DB_PASSWORD:}
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5
@@ -37,7 +39,7 @@ mybatis-plus:
       logic-not-delete-value: 0
 
 jwt:
-  secret: library-seat-system-jwt-secret-key-2026-library-management
+  secret: ${JWT_SECRET:please-change-me-in-application-local-yml}
   expiration: 86400000
   header: Authorization
   prefix: "Bearer "

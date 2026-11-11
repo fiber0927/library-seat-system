@@ -181,17 +181,23 @@ mysql -u root -p < library-seat-system/library-backend/sql/init.sql
 **EVENT 事件需要 `event_scheduler` 开启**（脚本里已执行 `SET GLOBAL event_scheduler = ON`，
 若你的 MySQL 启动时未开启，可以手动执行一次）。
 
-### 2. 改数据库连接
+### 2. 配置数据库连接与 JWT 密钥
 
-编辑 `library-seat-system/library-backend/src/main/resources/application.yml`：
+仓库里**不包含数据库密码和 JWT 密钥**。克隆后需要自己新建
+`library-seat-system/library-backend/src/main/resources/application-local.yml`：
 
 ```yaml
 spring:
   datasource:
-    url: jdbc:mysql://localhost:3306/library_seat_system?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai
-    username: root
-    password: 你的密码
+    password: 你的数据库密码
+
+jwt:
+  secret: 你的 JWT 密钥（至少 32 字节）
 ```
+
+这个文件已在 `.gitignore` 里，不会被提交。
+`application.yml` 中通过 `spring.profiles.active: local` 自动加载它，
+所以**不需要改任何启动命令**。
 
 ### 3. 启动后端
 
