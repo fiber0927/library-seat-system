@@ -353,8 +353,8 @@ const handleSelect = (index) => {
   activeMenu.value = index
 }
 
-const handleCheckIn = () => {
-  const result = seatsStore.checkIn(activeReservation.value.id)
+const handleCheckIn = async () => {
+  const result = await seatsStore.checkIn(activeReservation.value.id)
   if (result.success) {
     if (result.exceeded) {
       ElMessage({
@@ -370,8 +370,8 @@ const handleCheckIn = () => {
   }
 }
 
-const handleAway = () => {
-  const result = seatsStore.setAway(activeReservation.value.id)
+const handleAway = async () => {
+  const result = await seatsStore.setAway(activeReservation.value.id)
   if (result.success) {
     ElMessage.success('已设为暂离')
   } else {
@@ -379,8 +379,8 @@ const handleAway = () => {
   }
 }
 
-const handleReturn = () => {
-  const result = seatsStore.returnFromAway(activeReservation.value.id)
+const handleReturn = async () => {
+  const result = await seatsStore.returnFromAway(activeReservation.value.id)
   if (result.success) {
     ElMessage.success('已取消暂离')
   } else {
@@ -388,8 +388,8 @@ const handleReturn = () => {
   }
 }
 
-const handleCancel = () => {
-  const result = seatsStore.cancelReservation(activeReservation.value.id, userStore.user?.id)
+const handleCancel = async () => {
+  const result = await seatsStore.cancelReservation(activeReservation.value.id, userStore.user?.id)
   if (result.success) {
     ElMessage.success(result.message)
   } else {
@@ -397,8 +397,8 @@ const handleCancel = () => {
   }
 }
 
-const handleCheckOut = () => {
-  const result = seatsStore.checkOut(activeReservation.value.id)
+const handleCheckOut = async () => {
+  const result = await seatsStore.checkOut(activeReservation.value.id)
   if (result.success) {
     ElMessage.success(result.message)
   } else {
@@ -414,7 +414,9 @@ const goToPersonal = () => {
   router.push('/personal')
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await seatsStore.loadSeats()
+  await seatsStore.loadMyReservations(userStore.user?.id)
 })
 </script>
 

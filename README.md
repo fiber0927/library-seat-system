@@ -1,7 +1,7 @@
 # 图书馆座位预约系统 Library Seat Reservation System
 
 > 前后端分离的图书馆座位在线预约平台，解决座位资源分配不均与抢座冲突问题。
-> 后端提供完整的预约业务与鉴权能力，前端实现了座位可视化选座与移动端适配的交互原型。
+> 后端提供预约业务、鉴权与定时任务，前端提供可视化选座、预约管理与移动端适配，前后端已完整联调。
 >
 > Spring Boot 3 + MyBatis-Plus + MySQL + JWT ｜ Vue 3 + Pinia + Element Plus
 
@@ -9,13 +9,13 @@
 
 | 层级 | 技术 |
 |---|---|
-| 后端 | JDK 17 · Spring Boot 3.2.2 · **MyBatis-Plus 3.5.5**（条件构造器 + 全局逻辑删除）· Lombok |
+| 后端 | JDK 17 · Spring Boot 3.2.2 · **MyBatis-Plus 3.5.5**（条件构造器 + 全局逻辑删除 + 字段自动填充）· Lombok |
 | 鉴权 | **JWT**（jjwt 0.12.3，HS256）+ Spring MVC `HandlerInterceptor` · **BCrypt** 密码哈希 |
 | 定时任务 | Spring Scheduling（`@Scheduled`）· MySQL 存储过程 + EVENT 定时事件 |
 | 数据库 | MySQL 8（InnoDB / utf8mb4）· HikariCP 连接池 |
-| 前端 | Vue 3（Composition API）· Vue Router 4 · Pinia · Element Plus · Vite 5 |
+| 前端 | Vue 3（Composition API）· Vue Router 4 · Pinia · **Axios**（统一封装 + JWT 拦截）· Element Plus · Vite 5 |
 
-规模：后端 23 个 Java 文件 / 1617 行，前端 17 个文件 / 5093 行，34 个 REST 接口，4 张表。
+规模：后端 25 个 Java 文件 / 约 1700 行，前端 18 个文件 / 约 5200 行，35 个 REST 接口，4 张表。
 
 ## 功能模块
 
@@ -123,13 +123,6 @@ CREATE PROCEDURE cleanup_expired_reservations()
 
 初始化脚本：`library-seat-system/library-backend/sql/init.sql`（含建表、种子数据、存储过程、事件、视图）。
 
-### 演示账号
-
-| 角色 | 用户名 | 密码 |
-|---|---|---|
-| 管理员 | `admin` | `123456` |
-| 普通用户 | `student001` / `student002` / `student003` | `123456` |
-
 ## 项目结构
 
 ```
@@ -139,16 +132,17 @@ library-seat-system/
 │   │   ├── views/
 │   │   │   ├── user/                   # 用户端：Home / Login / Register / SeatMap / PersonalCenter
 │   │   │   └── admin/                  # 管理端：Dashboard / Seat / User / Reservation / Violation
-│   │   ├── stores/                     # Pinia：user / seats / admin
+│   │   ├── stores/                     # Pinia：user / seats / admin（全部对接后端接口）
+│   │   ├── utils/request.js            # Axios 封装：注入 JWT、统一拆包、401 跳登录
 │   │   ├── router/index.js             # 路由 + 登录守卫
 │   │   └── styles/global.css
-│   ├── vite.config.js                  # 端口 5174
+│   ├── vite.config.js                  # 端口 5174 + /api 代理到 8080
 │   └── package.json
 │
 ├── library-seat-system/library-backend/ # 后端 Spring Boot
 │   ├── src/main/java/com/library/
 │   │   ├── common/Result.java          # 统一响应体
-│   │   ├── config/                     # WebMvcConfig（注册拦截器）、CorsConfig
+│   │   ├── config/                     # WebMvcConfig（注册拦截器）、CorsConfig、AutoFillMetaObjectHandler
 │   │   ├── controller/                 # User / Seat / Reservation / Violation
 │   │   ├── entity/                     # 4 个实体
 │   │   ├── interceptor/JwtInterceptor  # JWT 校验
@@ -156,7 +150,9 @@ library-seat-system/
 │   │   ├── scheduler/                  # ReservationCleanupTask
 │   │   ├── service/                    # 业务逻辑
 │   │   └── utils/JwtUtils
-│   ├── src/main/resources/application.yml
+│   ├── src/main/resources/
+│   │   ├── application.yml             # 公共配置（不含密码与密钥）
+│   │   └── application-local.yml       # 本地配置：数据库密码 / JWT 密钥（不在仓库里）
 │   └── sql/init.sql
 │
 └── 开发过程.md文件/                     # 13 份开发过程记录（含前后代码对比的踩坑复盘）
@@ -218,6 +214,17 @@ npm run dev
 
 访问 `http://localhost:5174`；手机同 WiFi 下用 `http://<本机IP>:5174` 访问。
 
+> 前端的所有 `/api` 请求由 Vite 开发服务器代理到 `http://localhost:8080`
+> （见 `vite.config.js` 的 `server.proxy`），所以**前端也要开着后端才能正常工作**。
+> 生产部署时由 Nginx 做同样的转发。
+
+### 5. 演示账号
+
+| 角色 | 用户名 | 密码 |
+|---|---|---|
+| 管理员 | `admin` | `123456` |
+| 普通用户 | `student001` / `student002` / `student003` | `123456` |
+
 ## API 一览
 
 共 34 个接口，前缀 `/api`。除登录注册外均需携带 `Authorization: Bearer <token>`。
@@ -237,6 +244,7 @@ npm run dev
 | | `POST /reservations/{id}/check-in`、`/away`、`/return`、`/cancel`、`/checkout` | 签到 / 暂离 / 返回 / 取消 / 签退 |
 | | `GET /reservations/user/{userId}`、`/reservations/user/{userId}/active` | 我的预约 / 当前预约 |
 | | `GET /reservations`、`/reservations/status/{status}`、`/reservations/date/{date}` | 全部预约查询（管理员） |
+| | `POST /reservations/reset` | 一键清零：清空活跃预约并把座位复位（管理员） |
 | 违约 | `GET /violations`、`/violations/pending`、`/violations/statistics` | 违约查询与统计（管理员） |
 | | `GET /violations/user/{userId}` | 我的违约记录 |
 | | `POST /violations/{id}/handle`、`DELETE /violations/{id}` | 处理 / 删除违约（管理员） |
@@ -245,22 +253,32 @@ npm run dev
 
 写在这里是为了避免误解，也方便后续补齐：
 
-- **前端目前是交互原型，尚未联调后端**。`src/stores/seats.js` 用 `generateMockSeats()`
-  在浏览器里生成座位、状态随机分配，预约记录存在 localStorage；
-  后端 34 个接口已经写完但前端一次都没调用过。
-  前端的"一键清零"也只是清本地 mock 数据，并没有调用后端。
 - **没有并发控制**。预约链路是"先查后写"（查座位状态 → 查一人一座 → 查时段冲突 → 写入），
   没有分布式锁、没有唯一索引、没有乐观锁，两个并发请求可能同时通过校验造成重复预约。
   正确做法是**条件更新**（`UPDATE seat SET status=? WHERE id=? AND status='available'`）
   加**唯一索引**兜底，而不是引入 Redis 分布式锁。
-- **座位状态不分日期**。`seat.status` 是座位级的全局状态，所以今天约了 A101，
-  明天其他人也约不了它。正确做法是把"座位瞬时状态"和"时段占用"拆成两张表。
-- **时段重叠判定用的是闭区间**（`start_time <= end AND end_time >= start`），
-  首尾相接的两个时段会被误判为冲突，应改成半开区间。
+- **座位状态与时段耦合**。`seat.status` 是座位级的全局状态、不区分日期也不区分时段，
+  所以 A101 今天被约了，**明天、以及今天其它时段都约不了**（实测：不冲突的 14:00-16:00
+  也会被"座位不可预约"挡掉）。正确做法是把"座位瞬时状态"和"时段占用"拆成两张表，
+  用 `UNIQUE(seat_id, date, start_time)` 约束时段占用。
+- **一人一座没有日期条件**。只要用户存在任意一条未结束的预约，
+  就不能再约（跨日期、跨座位都算）。若要支持"每天可约一次"，查询要加日期范围。
 - **没有全局异常处理**，也没有 `@Valid` 参数校验（依赖引了但没用），参数格式错误会直接 500。
 - **没有单元测试**，也没有接口文档。
-- **JWT 密钥硬编码在 `application.yml`**，且没有黑名单 / 刷新机制，
-  账号被禁用后旧 token 在有效期内仍然可用。
+- **JWT 没有黑名单 / 刷新机制**，账号被禁用后旧 token 在有效期内仍然可用。
+
+## 联调时发现并修复的问题
+
+前端接上后端后跑通了全链路，也因此暴露出几个**只靠 mock 永远发现不了**的问题，
+这几个都是很好的面试素材：
+
+| # | 问题 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | **创建预约必然 500** | 实体里 `createTime` / `updateTime` 标了 `@TableField(fill = ...)`，但**没有注册 `MetaObjectHandler`**，于是这两个字段以 null 参与 insert，而数据库列是 `NOT NULL` | 实现 `AutoFillMetaObjectHandler`，用 `strictInsertFill` / `strictUpdateFill` 填充 |
+| 2 | **座位释放后 user_id 残留** | `updateById` 默认策略是 `FieldStrategy.NOT_NULL`，会**跳过 null 字段**，所以 `setUserId(null)` 根本没写进库，表现为"座位已空闲但仍显示被某人占用" | 改用 `LambdaUpdateWrapper` 显式 `.set(Seat::getUserId, null)` |
+| 3 | **相邻时段被误判为冲突** | 时段重叠判定用了闭区间（`le` / `ge`），09:00-12:00 与 12:00-14:00 首尾相接、实际不重叠却判成冲突 | 改成半开区间（`lt` / `gt`） |
+| 4 | **建库脚本直接失败** | `CREATE DATABASE` 行尾有多余空格，MySQL 报 `Incorrect database name`；且客户端默认字符集是 gbk，脚本里的 UTF-8 中文被错误解读，报 `Data too long` | 去掉行尾空格 + 脚本开头加 `SET NAMES utf8mb4` |
+| 5 | **一键清零按钮没有后端接口** | `ReservationService` 里有 `resetAllReservations`，但 Controller 没暴露，前端只能清本地 mock | 补 `POST /api/reservations/reset`（仅管理员） |
 
 ## License
 

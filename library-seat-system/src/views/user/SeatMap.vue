@@ -332,7 +332,7 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive, watch } from 'vue'
+import { ref, computed, reactive, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
@@ -483,31 +483,29 @@ const handleBooking = async () => {
   }
 
   bookingLoading.value = true
-  
-  setTimeout(() => {
-    const dateStr = new Date(bookingForm.date).toISOString().split('T')[0]
-    const result = seatsStore.createReservation(
-      selectedSeat.value.id,
-      userStore.user.id,
-      dateStr,
-      bookingForm.startTime,
-      bookingForm.endTime
-    )
 
-    if (result.success) {
-      ElMessage({
-        message: '预约成功！仅可预约1个座位，请按时签到后生效',
-        type: 'success',
-        duration: 5000
-      })
-      dialogVisible.value = false
-      selectedSeat.value = null
-    } else {
-      ElMessage.error(result.message)
-    }
+  const dateStr = new Date(bookingForm.date).toISOString().split('T')[0]
+  const result = await seatsStore.createReservation(
+    selectedSeat.value.id,
+    userStore.user.id,
+    dateStr,
+    bookingForm.startTime,
+    bookingForm.endTime
+  )
 
-    bookingLoading.value = false
-  }, 500)
+  if (result.success) {
+    ElMessage({
+      message: '预约成功！仅可预约1个座位，请按时签到后生效',
+      type: 'success',
+      duration: 5000
+    })
+    dialogVisible.value = false
+    selectedSeat.value = null
+  } else {
+    ElMessage.error(result.message)
+  }
+
+  bookingLoading.value = false
 }
 
 const disabledDate = (date) => {
@@ -523,6 +521,11 @@ const resetFilters = () => {
 const goBack = () => {
   router.push('/home')
 }
+
+onMounted(async () => {
+  await seatsStore.loadSeats()
+  await seatsStore.loadMyReservations(userStore.user?.id)
+})
 </script>
 
 <style scoped>

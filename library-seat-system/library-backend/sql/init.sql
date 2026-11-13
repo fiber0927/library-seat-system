@@ -153,7 +153,7 @@ INSERT INTO `seat` (`id`, `floor`, `area`, `row_num`, `col_num`, `status`, `feat
 ('C102', 1, 'C', 1, 2, 'available', '安静区,电源插座'),
 ('C103', 1, 'C', 1, 3, 'available', '安静区'),
 ('C104', 1, 'C', 1, 4, 'available', '安静区,靠窗'),
-('C105', 1, 'C', 2, 1, 'reserved', '安静区'),
+('C105', 1, 'C', 2, 1, 'in_use', '安静区'),
 ('C106', 1, 'C', 2, 2, 'available', '安静区,电源插座'),
 ('C107', 1, 'C', 2, 3, 'available', '安静区'),
 ('C108', 1, 'C', 2, 4, 'available', '安静区,靠窗');
@@ -177,7 +177,7 @@ FROM seat WHERE floor = 1;
 
 -- 插入预约记录示例
 INSERT INTO `reservation` (`seat_id`, `user_id`, `date`, `start_time`, `end_time`, `status`, `check_in_time`) VALUES
-('A105', 2, CURDATE(), '09:00:00', '12:00:00', 'reserved', NULL),
+('A105', 2, CURDATE(), '09:00:00', '12:00:00', 'pending', NULL),
 ('C105', 2, CURDATE(), '14:00:00', '17:00:00', 'active', NOW()),
 ('B103', 3, CURDATE(), '08:00:00', '11:00:00', 'away', NOW());
 

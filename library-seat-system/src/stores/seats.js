@@ -1,58 +1,62 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import request from '@/utils/request'
 
 export const useSeatsStore = defineStore('seats', () => {
-  const seats = ref(generateMockSeats())
-  const reservations = ref(JSON.parse(localStorage.getItem('reservations') || '[]'))
-  
+  // 座位数据来自后端 GET /seats
+  const seats = ref([])
+  // 当前登录用户的预约记录，来自 GET /reservations/user/{userId}
+  const reservations = ref([])
+  // 记住当前用户，操作后用来刷新预约列表
+  const currentUserId = ref(null)
+  const loaded = ref(false)
+
   const floors = [1, 2, 3]
   const areas = ['A', 'B', 'C', 'D']
   const seatFeatures = ['电源插座', '靠窗', '空调', '安静区', '讨论区']
 
-  function generateMockSeats() {
-    const mockSeats = []
-    for (let floor = 1; floor <= 3; floor++) {
-      for (let area of ['A', 'B', 'C', 'D']) {
-        const seatsInArea = area === 'A' || area === 'C' ? 16 : 12
-        for (let i = 1; i <= seatsInArea; i++) {
-          const row = Math.ceil(i / 4)
-          const col = ((i - 1) % 4) + 1
-          const seatId = `${area}${floor}${String(i).padStart(2, '0')}`
-          
-          const features = []
-          if (i % 5 === 1) features.push('电源插座')
-          if (col === 1) features.push('靠窗')
-          if (floor === 3) features.push('安静区')
-          if (area === 'D') features.push('讨论区')
-          
-          mockSeats.push({
-            id: seatId,
-            floor,
-            area,
-            row,
-            col,
-            status: getRandomStatus(),
-            features,
-            userId: null
-          })
-        }
-      }
+  /**
+   * 后端 seat.features 是逗号分隔的字符串（如 "电源插座,靠窗"），
+   * 前端展示需要数组；后端字段是 rowNum/colNum，模板里习惯用 row/col。
+   * 这里统一做一次转换，视图就不用关心后端的字段形态了。
+   */
+  const normalizeSeat = (seat) => ({
+    ...seat,
+    features: seat.features ? seat.features.split(',').filter(Boolean) : [],
+    row: seat.rowNum,
+    col: seat.colNum
+  })
+
+  /** 拉取全部座位（一次请求，楼层/区域筛选在前端做） */
+  const loadSeats = async () => {
+    try {
+      const list = await request.get('/seats')
+      seats.value = (list || []).map(normalizeSeat)
+      loaded.value = true
+      return { success: true }
+    } catch (e) {
+      return { success: false, message: e.message }
     }
-    return mockSeats
   }
 
-  function getRandomStatus() {
-    const statuses = ['available', 'reserved', 'in_use', 'away', 'disabled']
-    const weights = [0.4, 0.2, 0.2, 0.1, 0.1]
-    const random = Math.random()
-    let cumulative = 0
-    for (let i = 0; i < statuses.length; i++) {
-      cumulative += weights[i]
-      if (random < cumulative) {
-        return statuses[i]
-      }
+  /** 拉取当前用户的预约记录 */
+  const loadMyReservations = async (userId) => {
+    if (!userId) return { success: false, message: '未登录' }
+    try {
+      currentUserId.value = userId
+      reservations.value = await request.get(`/reservations/user/${userId}`)
+      return { success: true }
+    } catch (e) {
+      return { success: false, message: e.message }
     }
-    return 'available'
+  }
+
+  /** 数据变更后统一刷新：座位 + 当前用户预约 */
+  const refresh = async () => {
+    await loadSeats()
+    if (currentUserId.value) {
+      await loadMyReservations(currentUserId.value)
+    }
   }
 
   const getSeatsByFloor = computed(() => (floor) => {
@@ -74,7 +78,7 @@ export const useSeatsStore = defineStore('seats', () => {
     const inUse = seats.value.filter(s => s.status === 'in_use').length
     const away = seats.value.filter(s => s.status === 'away').length
     const disabled = seats.value.filter(s => s.status === 'disabled').length
-    
+
     return {
       total,
       available,
@@ -82,251 +86,135 @@ export const useSeatsStore = defineStore('seats', () => {
       inUse,
       away,
       disabled,
-      usageRate: ((inUse + reserved + away) / total * 100).toFixed(1)
+      usageRate: total ? ((inUse + reserved + away) / total * 100).toFixed(1) : '0.0'
     }
   })
 
-  const createReservation = (seatId, userId, date, startTime, endTime) => {
-    const seat = seats.value.find(s => s.id === seatId)
-    if (!seat || seat.status !== 'available') {
-      return { success: false, message: '座位不可预约' }
-    }
-
-    const existingReservation = reservations.value.find(
-      r => r.seatId === seatId && r.date === date && 
-           ((startTime >= r.startTime && startTime < r.endTime) ||
-            (endTime > r.startTime && endTime <= r.endTime))
-    )
-
-    if (existingReservation) {
-      return { success: false, message: '该时段已被预约' }
-    }
-
-    const reservation = {
-      id: reservations.value.length + 1,
-      seatId,
-      userId,
-      date,
-      startTime,
-      endTime,
-      status: 'pending',
-      checkInTime: null,
-      checkOutTime: null,
-      createdAt: new Date().toISOString()
-    }
-
-    reservations.value.push(reservation)
-    seat.status = 'reserved'
-    seat.userId = userId
-    
-    saveReservations()
-    return { success: true, reservation }
-  }
-
-  const GRACE_PERIOD_MINUTES = 30
-  
-  const checkIn = (reservationId) => {
-    const reservation = reservations.value.find(r => r.id === reservationId)
-    if (!reservation) {
-      return { success: false, message: '预约记录不存在' }
-    }
-
-    const now = new Date()
-    const [hours, minutes] = reservation.startTime.split(':').map(Number)
-    const startTime = new Date()
-    startTime.setHours(hours, minutes, 0, 0)
-    
-    const diffMinutes = (now - startTime) / (1000 * 60)
-    
-    if (diffMinutes > GRACE_PERIOD_MINUTES) {
-      reservation.status = 'violated'
-      
-      const seat = seats.value.find(s => s.id === reservation.seatId)
-      if (seat) {
-        seat.status = 'available'
-        seat.userId = null
-      }
-      
-      saveReservations()
-      return {
-        success: false,
-        message: `签到已超时（超过${GRACE_PERIOD_MINUTES}分钟宽限期），预约已取消`,
-        exceeded: true,
-        minutes: Math.round(diffMinutes)
-      }
-    }
-
-    reservation.status = 'active'
-    reservation.checkInTime = now.toISOString()
-    
-    const seat = seats.value.find(s => s.id === reservation.seatId)
-    if (seat) {
-      seat.status = 'in_use'
-    }
-    
-    saveReservations()
-    return {
-      success: true,
-      exceeded: false,
-      minutes: Math.round(diffMinutes)
-    }
-  }
-
-  const setAway = (reservationId) => {
-    const reservation = reservations.value.find(r => r.id === reservationId)
-    if (!reservation || reservation.status !== 'active') {
-      return { success: false, message: '无法暂离' }
-    }
-
-    reservation.status = 'away'
-    
-    const seat = seats.value.find(s => s.id === reservation.seatId)
-    if (seat) {
-      seat.status = 'away'
-    }
-    
-    saveReservations()
-    return { success: true }
-  }
-
-  const returnFromAway = (reservationId) => {
-    const reservation = reservations.value.find(r => r.id === reservationId)
-    if (!reservation || reservation.status !== 'away') {
-      return { success: false, message: '无法取消暂离' }
-    }
-
-    reservation.status = 'active'
-    
-    const seat = seats.value.find(s => s.id === reservation.seatId)
-    if (seat) {
-      seat.status = 'in_use'
-    }
-    
-    saveReservations()
-    return { success: true }
-  }
-
-  const cancelReservation = (reservationId, userId) => {
-    const reservationIndex = reservations.value.findIndex(
-      r => r.id === reservationId && r.userId === userId
-    )
-    if (reservationIndex === -1) {
-      return { success: false, message: '预约记录不存在' }
-    }
-
-    const reservation = reservations.value[reservationIndex]
-    const currentStatus = reservation.status
-    const seatId = reservation.seatId
-    
-    const seat = seats.value.find(s => s.id === seatId)
-    if (seat) {
-      seat.status = 'available'
-      seat.userId = null
-    }
-    
-    reservations.value.splice(reservationIndex, 1)
-    
-    saveReservations()
-    
-    let message
-    switch (currentStatus) {
-      case 'pending':
-        message = '预约已取消（待签到状态），座位已释放'
-        break
-      case 'active':
-        message = '预约已取消（使用中状态），座位已释放'
-        break
-      case 'away':
-        message = '预约已取消（暂离状态），座位已释放'
-        break
-      default:
-        message = '预约已取消，座位已释放'
-    }
-    
-    return { success: true, message }
-  }
-
-  const checkOut = (reservationId) => {
-    const reservationIndex = reservations.value.findIndex(r => r.id === reservationId)
-    if (reservationIndex === -1) {
-      return { success: false, message: '预约记录不存在' }
-    }
-
-    const reservation = reservations.value[reservationIndex]
-    const seatId = reservation.seatId
-    
-    const seat = seats.value.find(s => s.id === seatId)
-    if (seat) {
-      seat.status = 'available'
-      seat.userId = null
-    }
-    
-    reservations.value.splice(reservationIndex, 1)
-    
-    saveReservations()
-    return { success: true, message: '已结束使用，感谢使用' }
-  }
-
-  const getUserReservations = (userId) => {
+  const getUserReservations = computed(() => (userId) => {
     return reservations.value.filter(r => r.userId === userId)
-  }
+  })
 
-  const getActiveReservation = (userId) => {
+  const getActiveReservation = computed(() => (userId) => {
     return reservations.value.find(
-      r => r.userId === userId && 
-           (r.status === 'pending' || r.status === 'active' || r.status === 'away')
+      r => r.userId === userId &&
+        (r.status === 'pending' || r.status === 'active' || r.status === 'away')
     )
-  }
+  })
 
-  const updateSeatStatus = (seatId, status) => {
-    const seat = seats.value.find(s => s.id === seatId)
-    if (seat) {
-      seat.status = status
+  // ---------- 预约相关（全部走后端，业务规则由后端判定） ----------
+
+  const createReservation = async (seatId, userId, date, startTime, endTime) => {
+    try {
+      const data = await request.post('/reservations', { seatId, date, startTime, endTime })
+      await refresh()
+      return { success: true, message: data.message, reservation: data.reservation }
+    } catch (e) {
+      return { success: false, message: e.message }
     }
   }
 
-  const addSeat = (seatData) => {
-    const existingSeat = seats.value.find(s => s.id === seatData.id)
-    if (existingSeat) {
-      return { success: false, message: '座位号已存在' }
+  const checkIn = async (reservationId) => {
+    try {
+      const data = await request.post(`/reservations/${reservationId}/check-in`)
+      await refresh()
+      return { success: true, ...data }
+    } catch (e) {
+      return { success: false, message: e.message }
     }
-    
-    seats.value.push({
-      ...seatData,
-      status: seatData.status || 'available',
-      userId: null
-    })
-    return { success: true }
   }
 
-  const deleteSeat = (seatId) => {
-    const index = seats.value.findIndex(s => s.id === seatId)
-    if (index > -1) {
-      seats.value.splice(index, 1)
+  const setAway = async (reservationId) => {
+    try {
+      const data = await request.post(`/reservations/${reservationId}/away`)
+      await refresh()
+      return { success: true, message: data.message }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
+  }
+
+  const returnFromAway = async (reservationId) => {
+    try {
+      const data = await request.post(`/reservations/${reservationId}/return`)
+      await refresh()
+      return { success: true, message: data.message }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
+  }
+
+  const cancelReservation = async (reservationId) => {
+    try {
+      const data = await request.post(`/reservations/${reservationId}/cancel`)
+      await refresh()
+      return { success: true, message: data.message }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
+  }
+
+  const checkOut = async (reservationId) => {
+    try {
+      const data = await request.post(`/reservations/${reservationId}/checkout`)
+      await refresh()
+      return { success: true, message: data.message }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
+  }
+
+  // ---------- 管理员：座位维护 ----------
+
+  const addSeat = async (seatData) => {
+    try {
+      await request.post('/seats', seatData)
+      await loadSeats()
       return { success: true }
+    } catch (e) {
+      return { success: false, message: e.message }
     }
-    return { success: false, message: '座位不存在' }
   }
 
-  const resetAllSeats = () => {
-    seats.value.forEach(seat => {
-      seat.status = 'available'
-      seat.userId = null
-    })
-    reservations.value = []
-    saveReservations()
+  const updateSeatStatus = async (seatId, status) => {
+    try {
+      await request.put(`/seats/${seatId}/status`, { status })
+      await loadSeats()
+      return { success: true }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
   }
 
-  const saveReservations = () => {
-    localStorage.setItem('reservations', JSON.stringify(reservations.value))
+  const deleteSeat = async (seatId) => {
+    try {
+      await request.delete(`/seats/${seatId}`)
+      await loadSeats()
+      return { success: true }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
+  }
+
+  /** 一键清零（演示用）：清空所有活跃预约并把座位恢复空闲，违约记录保留 */
+  const resetAllSeats = async () => {
+    try {
+      const data = await request.post('/reservations/reset')
+      await refresh()
+      return { success: true, message: data?.message || '清零成功' }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
   }
 
   return {
     seats,
     reservations,
+    loaded,
     floors,
     areas,
     seatFeatures,
+    loadSeats,
+    loadMyReservations,
     getSeatsByFloor,
     getSeatsByArea,
     getSeatsByStatus,

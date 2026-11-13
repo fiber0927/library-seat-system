@@ -93,34 +93,32 @@ const loginRules = {
 const handleLogin = async () => {
   if (!loginFormRef.value) return
   
-  await loginFormRef.value.validate((valid) => {
+  await loginFormRef.value.validate(async (valid) => {
     if (valid) {
       loading.value = true
-      
-      setTimeout(() => {
-        const result = userStore.login(loginForm.username, loginForm.password)
-        
-        if (result.success) {
-          ElMessage.success('登录成功')
-          
-          if (result.user.role === 'admin') {
-            router.push('/admin')
-          } else {
-            router.push('/home')
-          }
+
+      const result = await userStore.login(loginForm.username, loginForm.password)
+
+      if (result.success) {
+        ElMessage.success('登录成功')
+
+        if (result.user.role === 'admin') {
+          router.push('/admin')
         } else {
-          ElMessage.error(result.message)
+          router.push('/home')
         }
-        
-        loading.value = false
-      }, 500)
+      } else {
+        ElMessage.error(result.message)
+      }
+
+      loading.value = false
     }
   })
 }
 
 const fillAdmin = () => {
   loginForm.username = 'admin'
-  loginForm.password = 'admin123'
+  loginForm.password = '123456'
 }
 
 const fillStudent = () => {

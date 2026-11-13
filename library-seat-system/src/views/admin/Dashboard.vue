@@ -304,7 +304,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useUserStore } from '@/stores/user'
@@ -378,14 +378,15 @@ const handleResetAll = async () => {
 
     resetLoading.value = true
 
-    setTimeout(() => {
-      seatsStore.resetAllSeats()
-      adminStore.clearReservations()
-      localStorage.removeItem('reservations')
-
-      resetLoading.value = false
+    const result = await seatsStore.resetAllSeats()
+    if (result.success) {
+      await adminStore.loadAllReservations()
       ElMessage.success('清零成功！所有座位已重置为「空闲」状态')
-    }, 500)
+    } else {
+      ElMessage.error(result.message || '清零失败，请重试')
+    }
+
+    resetLoading.value = false
   } catch (error) {
     if (error !== 'cancel') {
       ElMessage.error('清零失败，请重试')
@@ -393,6 +394,12 @@ const handleResetAll = async () => {
     }
   }
 }
+
+onMounted(async () => {
+  await seatsStore.loadSeats()
+  await adminStore.loadAllReservations()
+  await adminStore.loadAllViolations()
+})
 </script>
 
 <style scoped>

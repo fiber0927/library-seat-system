@@ -1,6 +1,7 @@
 package com.library.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.library.entity.Seat;
 import com.library.mapper.SeatMapper;
@@ -55,12 +56,17 @@ public class SeatService extends ServiceImpl<SeatMapper, Seat> {
 
     public boolean releaseSeat(String seatId) {
         Seat seat = this.getById(seatId);
-        if (seat != null) {
-            seat.setStatus("available");
-            seat.setUserId(null);
-            return this.updateById(seat);
+        if (seat == null) {
+            return false;
         }
-        return false;
+        // 注意：updateById 的默认更新策略是 FieldStrategy.NOT_NULL，会跳过 null 字段，
+        // 所以 setUserId(null) 根本不会写进数据库 —— 座位释放后 user_id 会残留，
+        // 表现为"座位已空闲但仍显示被某人占用"。
+        // 这里用 UpdateWrapper 显式把 status 和 user_id 一起更新。
+        return this.update(new LambdaUpdateWrapper<Seat>()
+                .eq(Seat::getId, seatId)
+                .set(Seat::getStatus, "available")
+                .set(Seat::getUserId, null));
     }
 
     public boolean addSeat(Seat seat) {

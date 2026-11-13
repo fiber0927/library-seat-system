@@ -167,4 +167,22 @@ public class ReservationController {
         List<Reservation> reservations = reservationService.getReservationsByDate(date);
         return Result.success(reservations);
     }
+
+    /**
+     * 一键清零（演示 / 管理员用）：清空所有活跃预约（pending/active/away），
+     * 并把对应座位状态释放回 available。违约记录保留。
+     */
+    @PostMapping("/reset")
+    public Result<?> resetAllReservations(HttpServletRequest request) {
+        String role = (String) request.getAttribute("role");
+        if (!"admin".equals(role)) {
+            return Result.error(403, "无权限执行清零操作");
+        }
+
+        Map<String, Object> result = reservationService.resetAllReservations((Long) request.getAttribute("userId"));
+        if ((boolean) result.get("success")) {
+            return Result.success((String) result.get("message"), result.get("deletedCount"));
+        }
+        return Result.error((String) result.get("message"));
+    }
 }

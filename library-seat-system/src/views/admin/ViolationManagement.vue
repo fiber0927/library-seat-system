@@ -153,7 +153,7 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive } from 'vue'
+import { ref, computed, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAdminStore } from '@/stores/admin'
@@ -187,26 +187,28 @@ const handleViolation = (violation) => {
   handleDialogVisible.value = true
 }
 
-const submitHandling = () => {
+const actionLabels = {
+  warning: '口头警告',
+  suspend: '暂停使用权限',
+  blacklist: '加入黑名单'
+}
+
+const submitHandling = async () => {
   if (!handleForm.notes) {
     ElMessage.warning('请输入处理说明')
     return
   }
 
-  const result = adminStore.handleViolation(selectedViolation.value.id, {
-    action: handleForm.action,
-    notes: handleForm.notes
-  })
+  // 后端把处理方式存进 violation.handling（一个字符串），处理人取当前登录用户
+  const handling = `${actionLabels[handleForm.action] || handleForm.action}：${handleForm.notes}`
+  const result = await adminStore.handleViolation(selectedViolation.value.id, handling)
 
   if (result.success) {
     ElMessage.success('违规处理成功')
-    
-    const user = userStore.mockUsers.find(u => u.id === selectedViolation.value.userId)
-    if (user && handleForm.action !== 'warning') {
-      user.violations++
-      ElMessage.warning(`${user.username} 的违约次数已更新`)
-    }
-    
+
+    // 违约次数由后端维护，处理完成后重新拉一次用户列表
+    await userStore.loadUsers()
+
     handleDialogVisible.value = false
     selectedViolation.value = null
   } else {
@@ -223,15 +225,24 @@ const deleteViolation = (violation) => {
       cancelButtonText: '取消',
       type: 'warning'
     }
-  ).then(() => {
-    adminStore.deleteViolation(violation.id)
-    ElMessage.success('违规记录已删除')
+  ).then(async () => {
+    const result = await adminStore.deleteViolation(violation.id)
+    if (result.success) {
+      ElMessage.success('违规记录已删除')
+    } else {
+      ElMessage.error(result.message)
+    }
   }).catch(() => {})
 }
 
 const goBack = () => {
   router.push('/admin')
 }
+
+onMounted(async () => {
+  await adminStore.loadAllViolations()
+  await userStore.loadUsers()
+})
 </script>
 
 <style scoped>

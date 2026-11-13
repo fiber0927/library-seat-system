@@ -1,49 +1,48 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import request from '@/utils/request'
 
 export const useAdminStore = defineStore('admin', () => {
-  const violations = ref(JSON.parse(localStorage.getItem('violations') || '[]'))
+  // 违约记录来自后端 GET /violations（管理员视角）
+  const violations = ref([])
+  // 当前用户自己的违约记录，来自 GET /violations/user/{userId}（普通用户也能调）
+  const myViolations = ref([])
+  // 全部预约（管理员视角）来自 GET /reservations
+  const reservations = ref([])
 
-  const mockViolations = [
-    {
-      id: 1,
-      userId: 2,
-      username: 'student001',
-      seatId: 'A102',
-      date: '2026-04-05',
-      reason: '预约后未签到',
-      status: 'pending',
-      createdAt: '2026-04-05T10:15:00'
-    },
-    {
-      id: 2,
-      userId: 2,
-      username: 'student001',
-      seatId: 'B203',
-      date: '2026-04-03',
-      reason: '暂离超时',
-      status: 'handled',
-      createdAt: '2026-04-03T14:30:00'
-    },
-    {
-      id: 3,
-      userId: 3,
-      username: 'student002',
-      seatId: 'C301',
-      date: '2026-04-06',
-      reason: '损坏公共设施',
-      status: 'pending',
-      createdAt: '2026-04-06T16:45:00'
+  /** 拉取全部违约记录（管理员） */
+  const loadAllViolations = async () => {
+    try {
+      violations.value = await request.get('/violations')
+      return { success: true }
+    } catch (e) {
+      return { success: false, message: e.message }
     }
-  ]
+  }
 
-  if (violations.value.length === 0) {
-    violations.value = mockViolations
-    localStorage.setItem('violations', JSON.stringify(mockViolations))
+  /** 拉取当前用户的违约记录（普通用户可用） */
+  const loadMyViolations = async (userId) => {
+    if (!userId) return { success: false, message: '未登录' }
+    try {
+      myViolations.value = await request.get(`/violations/user/${userId}`)
+      return { success: true }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
+  }
+
+  /** 拉取全部预约（管理员视角） */
+  const loadAllReservations = async () => {
+    try {
+      reservations.value = await request.get('/reservations')
+      return { success: true }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
   }
 
   const getAllViolations = computed(() => violations.value)
-  
+
   const getPendingViolations = computed(() => {
     return violations.value.filter(v => v.status === 'pending')
   })
@@ -52,56 +51,43 @@ export const useAdminStore = defineStore('admin', () => {
     return violations.value.filter(v => v.userId === userId)
   })
 
-  const createViolation = (violationData) => {
-    const violation = {
-      id: violations.value.length + 1,
-      ...violationData,
-      status: 'pending',
-      createdAt: new Date().toISOString()
+  /** 处理违约：后端写入 handling / handledBy / handledAt */
+  const handleViolation = async (violationId, handling) => {
+    try {
+      const message = await request.post(`/violations/${violationId}/handle`, { handling })
+      await loadAllViolations()
+      return { success: true, message }
+    } catch (e) {
+      return { success: false, message: e.message }
     }
-    violations.value.push(violation)
-    saveViolations()
-    return { success: true, violation }
   }
 
-  const handleViolation = (violationId, handling) => {
-    const violation = violations.value.find(v => v.id === violationId)
-    if (!violation) {
-      return { success: false, message: '违规记录不存在' }
-    }
-
-    violation.status = 'handled'
-    violation.handledAt = new Date().toISOString()
-    violation.handling = handling
-    
-    saveViolations()
-    return { success: true }
-  }
-
-  const deleteViolation = (violationId) => {
-    const index = violations.value.findIndex(v => v.id === violationId)
-    if (index > -1) {
-      violations.value.splice(index, 1)
-      saveViolations()
+  const deleteViolation = async (violationId) => {
+    try {
+      await request.delete(`/violations/${violationId}`)
+      await loadAllViolations()
       return { success: true }
+    } catch (e) {
+      return { success: false, message: e.message }
     }
-    return { success: false, message: '违规记录不存在' }
   }
 
-  const clearReservations = () => {
-    // 清零时不需要清空违规记录，违规记录保留
-    // 只清空座位和预约相关的数据
-  }
-
-  const saveViolations = () => {
-    localStorage.setItem('violations', JSON.stringify(violations.value))
+  /** 清零只清预约与座位，违约记录保留 —— 与后端 reset 接口语义一致 */
+  const clearReservations = async () => {
+    try {
+      const data = await request.post('/reservations/reset')
+      await loadAllReservations()
+      return { success: true, message: data?.message || '清零成功' }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
   }
 
   const violationStatistics = computed(() => {
     const total = violations.value.length
     const pending = violations.value.filter(v => v.status === 'pending').length
     const handled = violations.value.filter(v => v.status === 'handled').length
-    
+
     const reasonCount = {}
     violations.value.forEach(v => {
       reasonCount[v.reason] = (reasonCount[v.reason] || 0) + 1
@@ -117,10 +103,14 @@ export const useAdminStore = defineStore('admin', () => {
 
   return {
     violations,
+    myViolations,
+    reservations,
+    loadAllViolations,
+    loadMyViolations,
+    loadAllReservations,
     getAllViolations,
     getPendingViolations,
     getViolationsByUser,
-    createViolation,
     handleViolation,
     deleteViolation,
     violationStatistics,

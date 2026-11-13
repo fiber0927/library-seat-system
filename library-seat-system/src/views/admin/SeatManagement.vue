@@ -211,7 +211,7 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive } from 'vue'
+import { ref, computed, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useSeatsStore } from '@/stores/seats'
@@ -276,19 +276,20 @@ const showAddDialog = () => {
   addDialogVisible.value = true
 }
 
-const handleAdd = () => {
+const handleAdd = async () => {
   if (!addForm.id) {
     ElMessage.warning('请输入座位号')
     return
   }
 
-  const result = seatsStore.addSeat({
+  const result = await seatsStore.addSeat({
     id: addForm.id.toUpperCase(),
     floor: addForm.floor,
     area: addForm.area.toUpperCase(),
-    features: addForm.features,
-    row: 1,
-    col: 1
+    // 后端 features 是逗号分隔的字符串
+    features: (addForm.features || []).join(','),
+    rowNum: 1,
+    colNum: 1
   })
 
   if (result.success) {
@@ -301,10 +302,14 @@ const handleAdd = () => {
   }
 }
 
-const handleToggleStatus = (seat) => {
+const handleToggleStatus = async (seat) => {
   const newStatus = seat.status === 'disabled' ? 'available' : 'disabled'
-  seatsStore.updateSeatStatus(seat.id, newStatus)
-  ElMessage.success(`座位已${newStatus === 'disabled' ? '禁用' : '启用'}`)
+  const result = await seatsStore.updateSeatStatus(seat.id, newStatus)
+  if (result.success) {
+    ElMessage.success(`座位已${newStatus === 'disabled' ? '禁用' : '启用'}`)
+  } else {
+    ElMessage.error(result.message)
+  }
 }
 
 const handleDelete = (seat) => {
@@ -316,14 +321,18 @@ const handleDelete = (seat) => {
       cancelButtonText: '取消',
       type: 'warning'
     }
-  ).then(() => {
-    seatsStore.deleteSeat(seat.id)
-    ElMessage.success('座位已删除')
+  ).then(async () => {
+    const result = await seatsStore.deleteSeat(seat.id)
+    if (result.success) {
+      ElMessage.success('座位已删除')
+    } else {
+      ElMessage.error(result.message)
+    }
   }).catch(() => {})
 }
 
-const loadSeats = () => {
-  // 筛选已应用，这里只需触发重新计算
+const loadSeats = async () => {
+  await seatsStore.loadSeats()
 }
 
 const resetFilter = () => {
@@ -335,6 +344,10 @@ const resetFilter = () => {
 const goBack = () => {
   router.push('/admin')
 }
+
+onMounted(async () => {
+  await seatsStore.loadSeats()
+})
 </script>
 
 <style scoped>

@@ -172,7 +172,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { useAdminStore } from '@/stores/admin'
@@ -188,11 +188,11 @@ const selectedUser = ref(null)
 
 const filteredUsers = computed(() => {
   if (!searchQuery.value) {
-    return userStore.mockUsers
+    return userStore.users
   }
-  
+
   const query = searchQuery.value.toLowerCase()
-  return userStore.mockUsers.filter(user =>
+  return userStore.users.filter(user =>
     user.username.toLowerCase().includes(query) ||
     user.email.toLowerCase().includes(query)
   )
@@ -211,6 +211,11 @@ const viewDetails = (user) => {
 const goBack = () => {
   router.push('/admin')
 }
+
+onMounted(async () => {
+  await userStore.loadUsers()
+  await adminStore.loadAllViolations()
+})
 </script>
 
 <style scoped>

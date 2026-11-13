@@ -125,21 +125,21 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useSeatsStore } from '@/stores/seats'
+import { useAdminStore } from '@/stores/admin'
 
 const router = useRouter()
-const seatsStore = useSeatsStore()
+const adminStore = useAdminStore()
 
 const activeMenu = ref('/admin')
 const statusFilter = ref('all')
 
 const filteredReservations = computed(() => {
   if (statusFilter.value === 'all') {
-    return seatsStore.reservations
+    return adminStore.reservations
   }
-  return seatsStore.reservations.filter(r => r.status === statusFilter.value)
+  return adminStore.reservations.filter(r => r.status === statusFilter.value)
 })
 
 const getStatusType = (status) => {
@@ -175,6 +175,10 @@ const formatTime = (isoString) => {
 const goBack = () => {
   router.push('/admin')
 }
+
+onMounted(async () => {
+  await adminStore.loadAllReservations()
+})
 </script>
 
 <style scoped>

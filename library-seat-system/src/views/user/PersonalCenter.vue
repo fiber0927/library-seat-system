@@ -216,7 +216,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
@@ -243,7 +243,7 @@ const filteredReservations = computed(() => {
 })
 
 const userViolations = computed(() => {
-  return adminStore.getViolationsByUser(userStore.user?.id)
+  return adminStore.myViolations
 })
 
 const getStatusType = (status) => {
@@ -274,8 +274,8 @@ const handleSelect = (index) => {
   activeMenu.value = index
 }
 
-const handleCheckIn = (reservation) => {
-  const result = seatsStore.checkIn(reservation.id)
+const handleCheckIn = async (reservation) => {
+  const result = await seatsStore.checkIn(reservation.id)
   if (result.success) {
     if (result.exceeded) {
       ElMessage({
@@ -291,8 +291,8 @@ const handleCheckIn = (reservation) => {
   }
 }
 
-const handleAway = (reservation) => {
-  const result = seatsStore.setAway(reservation.id)
+const handleAway = async (reservation) => {
+  const result = await seatsStore.setAway(reservation.id)
   if (result.success) {
     ElMessage.success('已设为暂离')
   } else {
@@ -300,8 +300,8 @@ const handleAway = (reservation) => {
   }
 }
 
-const handleReturn = (reservation) => {
-  const result = seatsStore.returnFromAway(reservation.id)
+const handleReturn = async (reservation) => {
+  const result = await seatsStore.returnFromAway(reservation.id)
   if (result.success) {
     ElMessage.success('已取消暂离')
   } else {
@@ -309,8 +309,8 @@ const handleReturn = (reservation) => {
   }
 }
 
-const handleCancel = (reservation) => {
-  const result = seatsStore.cancelReservation(reservation.id, userStore.user?.id)
+const handleCancel = async (reservation) => {
+  const result = await seatsStore.cancelReservation(reservation.id, userStore.user?.id)
   if (result.success) {
     ElMessage.success(result.message)
   } else {
@@ -318,14 +318,25 @@ const handleCancel = (reservation) => {
   }
 }
 
-const handleCheckOut = (reservation) => {
-  seatsStore.checkOut(reservation.id)
-  ElMessage.success('已结束使用，感谢使用')
+const handleCheckOut = async (reservation) => {
+  const result = await seatsStore.checkOut(reservation.id)
+  if (result.success) {
+    ElMessage.success(result.message)
+  } else {
+    ElMessage.error(result.message)
+  }
 }
 
 const goBack = () => {
   router.push('/home')
 }
+
+onMounted(async () => {
+  await seatsStore.loadSeats()
+  await seatsStore.loadMyReservations(userStore.user?.id)
+  await adminStore.loadMyViolations(userStore.user?.id)
+  await userStore.fetchCurrentUser()
+})
 </script>
 
 <style scoped>

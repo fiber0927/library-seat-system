@@ -138,27 +138,25 @@ const registerRules = {
 const handleRegister = async () => {
   if (!registerFormRef.value) return
   
-  await registerFormRef.value.validate((valid) => {
+  await registerFormRef.value.validate(async (valid) => {
     if (valid) {
       loading.value = true
-      
-      setTimeout(() => {
-        const result = userStore.register({
-          username: registerForm.username,
-          email: registerForm.email,
-          phone: registerForm.phone,
-          password: registerForm.password
-        })
-        
-        if (result.success) {
-          ElMessage.success(result.message)
-          router.push('/login')
-        } else {
-          ElMessage.error(result.message)
-        }
-        
-        loading.value = false
-      }, 500)
+
+      const result = await userStore.register({
+        username: registerForm.username,
+        email: registerForm.email,
+        phone: registerForm.phone,
+        password: registerForm.password
+      })
+
+      if (result.success) {
+        ElMessage.success(result.message)
+        router.push('/login')
+      } else {
+        ElMessage.error(result.message)
+      }
+
+      loading.value = false
     }
   })
 }

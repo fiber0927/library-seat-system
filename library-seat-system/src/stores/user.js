@@ -1,115 +1,101 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import request, { getToken, setAuth, clearAuth } from '@/utils/request'
 
 export const useUserStore = defineStore('user', () => {
+  // 登录态从 localStorage 恢复，刷新页面不掉线
   const user = ref(JSON.parse(localStorage.getItem('user') || 'null'))
-  const token = ref(localStorage.getItem('token') || '')
+  const token = ref(getToken())
+  // 管理员用：后端返回的全部用户列表
+  const users = ref([])
 
-  const isLoggedIn = computed(() => !!user.value)
+  const isLoggedIn = computed(() => !!user.value && !!token.value)
   const isAdmin = computed(() => user.value?.role === 'admin')
 
-  const mockUsers = ref([
-    {
-      id: 1,
-      username: 'admin',
-      password: 'admin123',
-      email: 'admin@library.com',
-      phone: '13800138000',
-      role: 'admin',
-      violations: 0,
-      createdAt: '2025-01-01'
-    },
-    {
-      id: 2,
-      username: 'student001',
-      password: '123456',
-      email: 'student001@example.com',
-      phone: '13900139000',
-      role: 'user',
-      violations: 1,
-      createdAt: '2025-03-01'
-    },
-    {
-      id: 3,
-      username: 'student002',
-      password: '123456',
-      email: 'student002@example.com',
-      phone: '13700137000',
-      role: 'user',
-      violations: 0,
-      createdAt: '2025-03-15'
+  const login = async (username, password) => {
+    try {
+      const data = await request.post('/users/login', { username, password })
+      // data = { success, token, user }
+      token.value = data.token
+      user.value = data.user
+      setAuth(data.token, data.user)
+      return { success: true, user: data.user }
+    } catch (e) {
+      return { success: false, message: e.message }
     }
-  ])
-
-  const login = (username, password) => {
-    const foundUser = mockUsers.value.find(
-      u => u.username === username && u.password === password
-    )
-    
-    if (foundUser) {
-      const { password: _, ...userWithoutPassword } = foundUser
-      user.value = userWithoutPassword
-      token.value = 'mock-token-' + Date.now()
-      localStorage.setItem('user', JSON.stringify(userWithoutPassword))
-      localStorage.setItem('token', token.value)
-      return { success: true, user: userWithoutPassword }
-    }
-    
-    return { success: false, message: '用户名或密码错误' }
   }
 
-  const register = (userData) => {
-    const existingUser = mockUsers.value.find(
-      u => u.username === userData.username || u.email === userData.email
-    )
-    
-    if (existingUser) {
-      return { success: false, message: '用户名或邮箱已存在' }
+  const register = async (form) => {
+    try {
+      const message = await request.post('/users/register', {
+        username: form.username,
+        password: form.password,
+        email: form.email,
+        phone: form.phone || null
+      })
+      return { success: true, message }
+    } catch (e) {
+      return { success: false, message: e.message }
     }
-    
-    const newUser = {
-      id: mockUsers.value.length + 1,
-      username: userData.username,
-      password: userData.password,
-      email: userData.email,
-      phone: userData.phone || '',
-      role: 'user',
-      violations: 0,
-      createdAt: new Date().toISOString().split('T')[0]
-    }
-    
-    mockUsers.value.push(newUser)
-    return { success: true, message: '注册成功' }
   }
 
   const logout = () => {
     user.value = null
     token.value = ''
-    localStorage.removeItem('user')
-    localStorage.removeItem('token')
+    clearAuth()
   }
 
-  const updateViolations = (count) => {
-    if (user.value) {
-      user.value.violations = count
-      localStorage.setItem('user', JSON.stringify(user.value))
-      
-      const userInList = mockUsers.value.find(u => u.id === user.value.id)
-      if (userInList) {
-        userInList.violations = count
-      }
+  /** 刷新页面后用 token 换一次最新的用户信息（违约次数等由后端维护） */
+  const fetchCurrentUser = async () => {
+    try {
+      const current = await request.get('/users/current')
+      user.value = current
+      localStorage.setItem('user', JSON.stringify(current))
+      return { success: true, user: current }
+    } catch (e) {
+      return { success: false, message: e.message }
     }
+  }
+
+  /** 管理员：拉取全部用户 */
+  const loadUsers = async () => {
+    try {
+      users.value = await request.get('/users')
+      return { success: true }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
+  }
+
+  /** 管理员：启用 / 禁用账号 */
+  const toggleUserEnabled = async (id) => {
+    try {
+      const message = await request.put(`/users/${id}/toggle-enabled`)
+      await loadUsers()
+      return { success: true, message }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
+  }
+
+  /** 违约次数由后端维护，这里重新拉一次当前用户即可 */
+  const refreshViolations = async () => {
+    const res = await fetchCurrentUser()
+    return res
   }
 
   return {
     user,
     token,
+    users,
     isLoggedIn,
     isAdmin,
     login,
     register,
     logout,
-    updateViolations,
-    mockUsers
+    fetchCurrentUser,
+    loadUsers,
+    toggleUserEnabled,
+    refreshViolations
   }
 })

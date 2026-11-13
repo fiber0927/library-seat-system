@@ -56,10 +56,13 @@ public class ReservationService extends ServiceImpl<ReservationMapper, Reservati
             return Map.of("success", false, "message", "您当前已有预约，不可重复预约");
         }
 
+        // 时段重叠判定用半开区间：existing.start < new.end 且 existing.end > new.start。
+        // 原来用的是闭区间（le/ge），会把"09:00-12:00" 和 "12:00-14:00" 这种首尾相接、
+        // 实际并不重叠的时段误判成冲突。
         List<Reservation> conflictingReservations = this.list(new QueryWrapper<Reservation>()
                 .eq("seat_id", seatId)
                 .eq("date", date)
-                .and(w -> w.le("start_time", endTime).ge("end_time", startTime))
+                .and(w -> w.lt("start_time", endTime).gt("end_time", startTime))
                 .notIn("status", "cancelled", "completed", "violated"));
 
         if (!conflictingReservations.isEmpty()) {
