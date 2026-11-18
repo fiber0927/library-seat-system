@@ -94,19 +94,6 @@ CREATE PROCEDURE cleanup_expired_reservations()
 - **密码**：BCrypt 加盐哈希（`BCryptPasswordEncoder`），数据库里不存明文
 - **逻辑删除**：MyBatis-Plus 全局配置，删除即 `deleted = 1`
 
-### 5. 开发过程中修掉的真实 Bug
-
-`开发过程.md文件/` 里记录了带**前后代码对比**的 5 个问题，其中两个值得一看：
-
-**① 座位显示空闲，但后端说已被预约**
-取消预约时原本只把预约状态改成 `cancelled`、座位改成 `available`，
-但**预约记录还在**，而时段冲突检测查的就是预约表 —— 于是座位"看着能约，其实约不上"。
-修法是改成**物理删除**预约记录，并且固定"先释放座位、再删记录"的顺序。
-
-**② 暂离状态下无法取消，座位永久卡死**
-原代码禁止在 `active` / `away` 状态取消预约，用户在暂离时点取消被拒，
-座位就永远停在"已预约"。改成**任何状态都能取消且都释放座位**，并按原状态返回不同的提示文案。
-
 ## 数据库设计
 
 4 张表，`utf8mb4` + InnoDB，索引齐备：
@@ -154,8 +141,6 @@ library-seat-system/
 │   │   ├── application.yml             # 公共配置（不含密码与密钥）
 │   │   └── application-local.yml       # 本地配置：数据库密码 / JWT 密钥（不在仓库里）
 │   └── sql/init.sql
-│
-└── 开发过程.md文件/                     # 13 份开发过程记录（含前后代码对比的踩坑复盘）
 ```
 
 ## 快速启动
@@ -266,19 +251,6 @@ npm run dev
 - **没有全局异常处理**，也没有 `@Valid` 参数校验（依赖引了但没用），参数格式错误会直接 500。
 - **没有单元测试**，也没有接口文档。
 - **JWT 没有黑名单 / 刷新机制**，账号被禁用后旧 token 在有效期内仍然可用。
-
-## 联调时发现并修复的问题
-
-前端接上后端后跑通了全链路，也因此暴露出几个**只靠 mock 永远发现不了**的问题，
-这几个都是很好的面试素材：
-
-| # | 问题 | 根因 | 修法 |
-|---|---|---|---|
-| 1 | **创建预约必然 500** | 实体里 `createTime` / `updateTime` 标了 `@TableField(fill = ...)`，但**没有注册 `MetaObjectHandler`**，于是这两个字段以 null 参与 insert，而数据库列是 `NOT NULL` | 实现 `AutoFillMetaObjectHandler`，用 `strictInsertFill` / `strictUpdateFill` 填充 |
-| 2 | **座位释放后 user_id 残留** | `updateById` 默认策略是 `FieldStrategy.NOT_NULL`，会**跳过 null 字段**，所以 `setUserId(null)` 根本没写进库，表现为"座位已空闲但仍显示被某人占用" | 改用 `LambdaUpdateWrapper` 显式 `.set(Seat::getUserId, null)` |
-| 3 | **相邻时段被误判为冲突** | 时段重叠判定用了闭区间（`le` / `ge`），09:00-12:00 与 12:00-14:00 首尾相接、实际不重叠却判成冲突 | 改成半开区间（`lt` / `gt`） |
-| 4 | **建库脚本直接失败** | `CREATE DATABASE` 行尾有多余空格，MySQL 报 `Incorrect database name`；且客户端默认字符集是 gbk，脚本里的 UTF-8 中文被错误解读，报 `Data too long` | 去掉行尾空格 + 脚本开头加 `SET NAMES utf8mb4` |
-| 5 | **一键清零按钮没有后端接口** | `ReservationService` 里有 `resetAllReservations`，但 Controller 没暴露，前端只能清本地 mock | 补 `POST /api/reservations/reset`（仅管理员） |
 
 ## License
 
